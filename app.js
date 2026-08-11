@@ -130,20 +130,31 @@ function renderLibrary() {
 
   sections.forEach((section) => {
     const article = document.createElement("article");
-    article.className = `library-section${section.items.length === 1 ? " single-resource-section" : ""}`;
+    article.className = "workshop-section";
     article.id = section.id;
+    const recording = section.items.find(isRecording);
+    const materials = section.items.filter((item) => item !== recording);
     article.innerHTML = `
       <div class="section-heading">
-        <h3>${escapeHtml(section.name)}</h3>
-        <p>${section.items.length} resource${section.items.length === 1 ? "" : "s"}</p>
+        <div>
+          <h3>${escapeHtml(section.name)}</h3>
+          ${section.description ? `<p class="section-description">${escapeHtml(section.description)}</p>` : ""}
+        </div>
+        <p>${section.items.length} material${section.items.length === 1 ? "" : "s"}</p>
       </div>
-      <div class="resource-grid"></div>
+      <div class="workshop-content">
+        ${recording ? renderRecordingPreview(recording) : ""}
+        <div class="material-list"></div>
+      </div>
     `;
 
-    const grid = article.querySelector(".resource-grid");
-    section.items.forEach((item) => {
-      grid.append(renderResourceCard(item));
+    const list = article.querySelector(".material-list");
+    materials.forEach((item) => {
+      list.append(renderMaterialLink(item));
     });
+    if (!materials.length && recording) {
+      list.remove();
+    }
 
     elements.sectionList.append(article);
   });
@@ -158,41 +169,72 @@ function renderLibrary() {
   }
 }
 
-function renderResourceCard(item) {
-  const card = document.createElement("article");
-  card.className = "resource-card";
+function isRecording(item) {
+  return item.embedUrl || ["recording", "video"].includes(String(item.type || "").toLowerCase());
+}
 
-  const media = document.createElement("div");
-  media.className = "resource-media";
-  if (item.embedUrl && /\.(mp4|webm|mov)(\?|$)/i.test(item.embedUrl)) {
-    media.innerHTML = `<video controls preload="metadata" src="${escapeAttribute(item.embedUrl)}"></video>`;
-  } else if (item.embedUrl) {
-    media.innerHTML = `
-      <iframe
-        src="${escapeAttribute(item.embedUrl)}"
-        title="${escapeAttribute(item.title)}"
-        loading="lazy"
-        referrerpolicy="strict-origin-when-cross-origin"
-        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-        allowfullscreen>
-      </iframe>
-    `;
-  } else {
-    media.innerHTML = `<div class="resource-placeholder" aria-hidden="true">RWS</div>`;
+function youtubeThumbnail(url) {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, "");
+    const id = host === "youtu.be" ? parsed.pathname.slice(1) : parsed.searchParams.get("v");
+    return id ? `https://img.youtube.com/vi/${id}/hqdefault.jpg` : "";
+  } catch {
+    return "";
   }
+}
 
-  const body = document.createElement("div");
-  body.className = "resource-body";
-  body.innerHTML = `
-    <h4><a href="${escapeAttribute(item.url)}" target="_blank" rel="noopener">${escapeHtml(item.title)}</a></h4>
-    <div class="resource-meta">
-      ${item.speaker ? `<span>${escapeHtml(item.speaker)}</span>` : ""}
-      ${item.date ? `<span>${escapeHtml(item.date)}</span>` : ""}
-    </div>
+function renderRecordingPreview(item) {
+  const thumbnail = youtubeThumbnail(item.url);
+  const media = thumbnail
+    ? `<img src="${escapeAttribute(thumbnail)}" alt="" loading="lazy">`
+    : `<div class="resource-placeholder" aria-hidden="true">RWS</div>`;
+
+  return `
+    <a class="recording-card" href="${escapeAttribute(item.url)}" target="_blank" rel="noopener">
+      <span class="recording-media">
+        ${media}
+        <span class="play-badge" aria-hidden="true"></span>
+      </span>
+      <span class="recording-body">
+        <span class="material-type">${escapeHtml(materialTypeLabel(item))}</span>
+        <strong>${escapeHtml(item.title)}</strong>
+        <small>${escapeHtml([item.speaker, item.date].filter(Boolean).join(" - "))}</small>
+      </span>
+    </a>
   `;
+}
 
-  card.append(media, body);
-  return card;
+function renderMaterialLink(item) {
+  const link = document.createElement("a");
+  link.className = `material-link material-${escapeAttribute(String(item.type || "resource").toLowerCase())}`;
+  link.href = item.url;
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.innerHTML = `
+    <span class="material-type">${escapeHtml(materialTypeLabel(item))}</span>
+    <span class="material-text">
+      <strong>${escapeHtml(item.title)}</strong>
+      <small>${escapeHtml([item.speaker, item.date].filter(Boolean).join(" - "))}</small>
+    </span>
+    <span class="material-arrow" aria-hidden="true">→</span>
+  `;
+  return link;
+}
+
+function materialTypeLabel(item) {
+  const type = String(item.type || "resource").toLowerCase();
+  const labels = {
+    recording: "Recording",
+    video: "Recording",
+    slides: "Slides",
+    handout: "Handout",
+    evaluation: "Evaluation",
+    pdf: "PDF",
+    link: "Link",
+    resource: "Resource",
+  };
+  return labels[type] || "Resource";
 }
 
 function updateLibrarySummary() {
