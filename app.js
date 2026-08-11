@@ -138,7 +138,10 @@ function renderLibrary() {
       <div class="section-heading">
         <div>
           <h3>${escapeHtml(section.name)}</h3>
-          ${section.description ? `<p class="section-description">${escapeHtml(section.description)}</p>` : ""}
+          <dl class="session-meta">
+            ${section.date ? `<div><dt>Recorded</dt><dd>${escapeHtml(section.date)}</dd></div>` : ""}
+            ${section.presenter ? `<div><dt>Presenter</dt><dd>${escapeHtml(section.presenter)}</dd></div>` : ""}
+          </dl>
         </div>
         <p>${section.items.length} material${section.items.length === 1 ? "" : "s"}</p>
       </div>
@@ -173,35 +176,28 @@ function isRecording(item) {
   return item.embedUrl || ["recording", "video"].includes(String(item.type || "").toLowerCase());
 }
 
-function youtubeThumbnail(url) {
-  try {
-    const parsed = new URL(url);
-    const host = parsed.hostname.replace(/^www\./, "");
-    const id = host === "youtu.be" ? parsed.pathname.slice(1) : parsed.searchParams.get("v");
-    return id ? `https://img.youtube.com/vi/${id}/hqdefault.jpg` : "";
-  } catch {
-    return "";
-  }
-}
-
 function renderRecordingPreview(item) {
-  const thumbnail = youtubeThumbnail(item.url);
-  const media = thumbnail
-    ? `<img src="${escapeAttribute(thumbnail)}" alt="" loading="lazy">`
-    : `<div class="resource-placeholder" aria-hidden="true">RWS</div>`;
+  const media = item.embedUrl
+    ? `
+      <iframe
+        src="${escapeAttribute(item.embedUrl)}"
+        title="${escapeAttribute(item.title)}"
+        loading="lazy"
+        referrerpolicy="strict-origin-when-cross-origin"
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+        allowfullscreen>
+      </iframe>
+    `
+    : `<a href="${escapeAttribute(item.url)}" target="_blank" rel="noopener">Open recording</a>`;
 
   return `
-    <a class="recording-card" href="${escapeAttribute(item.url)}" target="_blank" rel="noopener">
-      <span class="recording-media">
-        ${media}
-        <span class="play-badge" aria-hidden="true"></span>
-      </span>
-      <span class="recording-body">
+    <div class="recording-card">
+      <div class="recording-media">${media}</div>
+      <div class="recording-body">
         <span class="material-type">${escapeHtml(materialTypeLabel(item))}</span>
         <strong>${escapeHtml(item.title)}</strong>
-        <small>${escapeHtml([item.speaker, item.date].filter(Boolean).join(" - "))}</small>
-      </span>
-    </a>
+      </div>
+    </div>
   `;
 }
 
