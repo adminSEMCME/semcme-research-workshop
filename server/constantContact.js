@@ -135,15 +135,24 @@ function fieldValue(field) {
   if (!field || typeof field !== "object") return "";
   const value =
     field.value ??
+    field.values ??
     field.answer ??
+    field.answer_value ??
+    field.answerValue ??
     field.answer_text ??
     field.answers ??
     field.response ??
     field.response_text ??
+    field.display_value ??
+    field.displayValue ??
     field.field_value ??
     field.custom_field_value ??
     field.selected_value ??
+    field.selectedValue ??
     field.selected_option ??
+    field.option ??
+    field.option_value ??
+    field.optionLabel ??
     field.choices ??
     "";
 
@@ -266,21 +275,32 @@ function roleTitleValue(record) {
 
 function flattenRegistrationFields(record) {
   const fields = [];
-  const visit = (value, parentLabel = "") => {
+  const visit = (value, parentLabel = "", depth = 0) => {
     if (!value) return;
     if (Array.isArray(value)) {
-      value.forEach((item) => visit(item, parentLabel));
+      value.forEach((item) => visit(item, parentLabel, depth + 1));
       return;
     }
-    if (typeof value !== "object") return;
+    if (typeof value !== "object" || depth > 8) return;
 
     const label = fieldLabel(value) || parentLabel;
     const answer = fieldValue(value);
     if (label && answer) fields.push({ label, value: answer });
 
     for (const key of ["custom_fields", "custom_questions", "questions", "answers", "fields", "form_fields", "registration_fields"]) {
-      if (value[key]) visit(value[key], label);
+      if (value[key]) visit(value[key], label, depth + 1);
     }
+
+    Object.entries(value).forEach(([key, child]) => {
+      if (child == null) return;
+      const keyLabel = key.replace(/[_-]+/g, " ");
+      if (typeof child === "string" || typeof child === "number") {
+        const childValue = String(child).trim();
+        if (childValue) fields.push({ label: keyLabel, value: childValue });
+      } else if (typeof child === "object" && !["rawData"].includes(key)) {
+        visit(child, keyLabel, depth + 1);
+      }
+    });
   };
 
   visit(record);
@@ -344,12 +364,43 @@ function findStringByPath(record, pathCandidates) {
   return match?.value || null;
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function findLabeledValueInText(text, labels) {
+  const source = String(text || "").replace(/\s+/g, " ").trim();
+  if (!source) return null;
+
+  for (const label of labels) {
+    const pattern = new RegExp(
+      `${escapeRegExp(label)}\\s*:\\s*([^•\\n\\r]+?)(?=\\s+\\w[\\w /-]{1,45}:|\\s*•|$)`,
+      "i"
+    );
+    const match = source.match(pattern);
+    if (match?.[1]) return match[1].trim();
+  }
+
+  return null;
+}
+
+function findProfileValueInStrings(record, labels) {
+  const strings = flattenRegistrationStrings(record);
+  for (const entry of strings) {
+    const value = findLabeledValueInText(entry.value, labels);
+    if (value) return value;
+  }
+  return null;
+}
+
 function findProfileField(record, directPaths, labels, pathCandidates = labels) {
   for (const path of directPaths) {
     const value = readPath(record, path);
     if (typeof value === "string" && value.trim()) return value.trim();
   }
-  return findFieldValueByLabel(record, labels) || findStringByPath(record, pathCandidates);
+  return findFieldValueByLabel(record, labels) ||
+    findProfileValueInStrings(record, labels) ||
+    findStringByPath(record, pathCandidates);
 }
 
 function mapRegistration(record, program) {
