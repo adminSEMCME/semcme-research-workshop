@@ -194,7 +194,6 @@ function renderRecordingPreview(item) {
     <div class="recording-card">
       <div class="recording-media">${media}</div>
       <div class="recording-body">
-        <span class="material-type">${escapeHtml(materialTypeLabel(item))}</span>
         <strong>${escapeHtml(item.title)}</strong>
       </div>
     </div>
