@@ -12,7 +12,6 @@ const elements = {
   email: document.querySelector("#email"),
   loginError: document.querySelector("#loginError"),
   loginSuccess: document.querySelector("#loginSuccess"),
-  previewButton: document.querySelector("#previewButton"),
   registerLink: document.querySelector("#registerLink"),
   signOutButton: document.querySelector("#signOutButton"),
   publicLinks: document.querySelectorAll(".public-nav-link"),
@@ -248,12 +247,10 @@ function updateLibrarySummary() {
   );
 }
 
-async function loadLibrary({ preview = false } = {}) {
+async function loadLibrary() {
   setLoading(true);
   try {
-    state.library = await requestJson(
-      preview ? "/api/library-preview" : "/api/library",
-    );
+    state.library = await requestJson("/api/library");
     renderSectionFilter();
     updateLibrarySummary();
     renderLibrary();
@@ -262,10 +259,10 @@ async function loadLibrary({ preview = false } = {}) {
   }
 }
 
-async function showPortal(user, options = {}) {
+async function showPortal(user) {
   state.user = user;
   elements.welcomeText.textContent = `Welcome back, ${user.name || user.email}.`;
-  await loadLibrary(options);
+  await loadLibrary();
   setAuthView(true);
 }
 
@@ -319,25 +316,6 @@ elements.loginForm.addEventListener("submit", async (event) => {
     }
   } finally {
     button.disabled = false;
-  }
-});
-
-elements.previewButton.addEventListener("click", async () => {
-  elements.loginError.textContent = "";
-  elements.loginSuccess.textContent = "Loading preview materials...";
-  elements.previewButton.disabled = true;
-
-  try {
-    await showPortal(
-      { name: "Preview User", email: "preview@semcme.org" },
-      { preview: true },
-    );
-    elements.loginSuccess.textContent = "";
-  } catch (error) {
-    elements.loginError.textContent = error.message;
-    elements.loginSuccess.textContent = "";
-  } finally {
-    elements.previewButton.disabled = false;
   }
 });
 
