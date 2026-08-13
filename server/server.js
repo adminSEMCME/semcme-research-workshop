@@ -316,7 +316,7 @@ function userHasProfileDetails(user) {
 
 async function resolveRegisteredUser(email) {
   const existing = await findUserByEmail(email);
-  if (existing && userHasProfileDetails(existing)) return existing;
+  if (existing && !shouldRecheckRegistration(existing)) return existing;
 
   const registration = await findVirtualLibraryRegistrationByEmail(email);
   if (!registration) return existing || null;
