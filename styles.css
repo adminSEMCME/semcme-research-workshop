@@ -547,13 +547,14 @@ a:focus-visible {
 }
 
 .about-course h2 {
-  margin-bottom: 12px;
+  max-width: 1180px;
+  margin: 0 auto 12px;
   color: var(--blue);
 }
 
 .about-course p {
   max-width: 1180px;
-  margin: 0 0 16px;
+  margin: 0 auto 16px;
   color: #3f4b56;
   font-size: 16px;
   line-height: 1.65;
@@ -562,9 +563,9 @@ a:focus-visible {
 .about-course ul {
   display: grid;
   gap: 7px;
-  max-width: 1120px;
-  margin: 4px 0 20px 22px;
-  padding: 0;
+  max-width: 1180px;
+  margin: 4px auto 20px;
+  padding-left: 22px;
   color: #3f4b56;
   font-size: 15px;
   line-height: 1.45;
