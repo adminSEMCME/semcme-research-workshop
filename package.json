@@ -7,7 +7,9 @@
     "start": "node server/server.js",
     "dev": "node --watch server/server.js",
     "db:migrate": "node server/migrate.js",
-    "start:prod": "node server/migrate.js && node server/server.js"
+    "start:prod": "node server/migrate.js && node server/server.js",
+    "test": "node tools/test-admin-updates.mjs",
+    "check": "node --check admin.js && node --check app.js && node --check resource-download.js && node --check server/server.js && node --check server/repositories.js && node --check server/constantContact.js && node --check server/workshop-settings.js && node --check server/resource-files.js && node --check server/library.js"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",
@@ -15,5 +17,8 @@
     "express": "^4.21.2",
     "nodemailer": "^9.0.3",
     "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16"
   }
 }

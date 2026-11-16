@@ -1,3 +1,5 @@
+import { resourceUrl, MAX_FILE_BYTES } from "./resource-files.js";
+import { getWorkshopSettings, saveWorkshopSettings, validateWorkshopSettings, registrationNeedsRecheck } from "./workshop-settings.js";
 import express from "express";
 import cookieParser from "cookie-parser";
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -16,6 +18,7 @@ import {
   ConstantContactError,
   listVirtualLibraryRegistrations,
   saveConstantContactTokens,
+  validateRegistrationCampaign,
   withVirtualLibraryRegistrationDetails,
 } from "./constantContact.js";
 import { sendMagicLinkEmail } from "./mailer.js";
@@ -103,8 +106,10 @@ app.use((request, response, next) => {
   next();
 });
 
-app.use(express.json({ limit: "100kb" }));
+// Authenticate before parsing the larger attachment payload.
 app.use(cookieParser());
+app.use(['/api/admin/library/items', '/api/admin/resource-uploads'], requireAdmin, express.json({ limit: '4300kb' }));
+app.use(express.json({ limit: "100kb" }));
 app.use(
   "/assets",
   express.static(path.join(rootDir, "assets"), { maxAge: "1h" }),
@@ -118,6 +123,7 @@ app.get("/app.js", (request, response) =>
 app.get("/admin.js", (request, response) =>
   response.sendFile(path.join(rootDir, "admin.js")),
 );
+app.get('/resource-download.js', (request, response) => response.sendFile(path.join(rootDir, 'resource-download.js')));
 app.get("/admin.css", (request, response) =>
   response.sendFile(path.join(rootDir, "admin.css")),
 );
@@ -297,17 +303,8 @@ function publicAdminUser(user) {
   };
 }
 
-function shouldRecheckRegistration(user) {
-  if (!config.constantContact.registrationRecheckMinutes) return false;
-  if (!user.synced_at) return true;
-
-  const syncedAt = new Date(user.synced_at).getTime();
-  if (Number.isNaN(syncedAt)) return true;
-
-  return (
-    Date.now() - syncedAt >
-    config.constantContact.registrationRecheckMinutes * 60 * 1000
-  );
+async function shouldRecheckRegistration(user) {
+  return registrationNeedsRecheck(user, await getWorkshopSettings());
 }
 
 function userHasProfileDetails(user) {
@@ -316,17 +313,20 @@ function userHasProfileDetails(user) {
 
 async function resolveRegisteredUser(email) {
   const existing = await findUserByEmail(email);
-  if (existing && !shouldRecheckRegistration(existing)) return existing;
+  if (existing && !(await shouldRecheckRegistration(existing))) return existing;
 
   const registration = await findVirtualLibraryRegistrationByEmail(email);
-  if (!registration) return existing || null;
+  if (!registration) {
+    if (existing) await updateUserRegistrationStatus(email, 'NOT_REGISTERED');
+    return null;
+  }
 
   return upsertUserFromRegistration(await withVirtualLibraryRegistrationDetails(registration));
 }
 
 async function requireCurrentRegistration(request, response, next) {
   try {
-    if (!shouldRecheckRegistration(request.user)) {
+    if (!(await shouldRecheckRegistration(request.user))) {
       next();
       return;
     }
@@ -369,10 +369,9 @@ app.get("/api/health", async (request, response) => {
   }
 });
 
-app.get("/api/public-settings", (request, response) => {
-  response.json({
-    registrationUrl: config.registrationUrl,
-  });
+app.get("/api/public-settings", requireDatabase, async (request, response, next) => {
+  try { response.json({ registrationUrl: (await getWorkshopSettings()).registrationUrl }); }
+  catch (error) { next(error); }
 });
 
 app.post(
@@ -392,7 +391,7 @@ app.post(
       if (!user) {
         response.status(403).json({
           error: "This email is not registered for the SEMCME Research Workshop Series.",
-          registrationUrl: config.registrationUrl,
+          registrationUrl: (await getWorkshopSettings()).registrationUrl,
         });
         return;
       }
@@ -423,7 +422,8 @@ app.post(
 app.get("/api/verify-magic-link", requireDatabase, async (request, response, next) => {
   try {
     const token = String(request.query.token || "");
-    const user = token ? await consumeMagicLink(token) : null;
+    const linkedUser = token ? await consumeMagicLink(token) : null;
+    const user = linkedUser ? await resolveRegisteredUser(linkedUser.email) : null;
 
     if (!user) {
       response
@@ -549,7 +549,8 @@ function publicAdminLibrary(sections) {
         title: item.title,
         speaker: item.speaker || "",
         date: item.resource_date || "",
-        url: item.url,
+        url: resourceUrl(item),
+        fileName: item.file_name || "",
         itemType: item.item_type,
         displayOrder: item.display_order,
         isVisible: item.is_visible
@@ -564,6 +565,17 @@ app.get("/api/admin/library", requireDatabase, requireAdmin, async (request, res
   } catch (error) {
     next(error);
   }
+});
+
+app.get('/api/admin/registration-settings', requireDatabase, requireAdmin, async (request, response, next) => {
+  try { response.json(await getWorkshopSettings()); } catch (error) { next(error); }
+});
+
+app.put('/api/admin/registration-settings', requireDatabase, requireAdmin, async (request, response, next) => {
+  try {
+    const settings = await validateRegistrationCampaign(validateWorkshopSettings(request.body || {}));
+    response.json(await saveWorkshopSettings(settings));
+  } catch (error) { next(error); }
 });
 
 app.get("/api/admin/users", requireDatabase, requireAdmin, async (request, response, next) => {
@@ -648,6 +660,37 @@ app.delete("/api/admin/library/sections/:id", requireDatabase, requireAdmin, asy
   }
 });
 
+app.post('/api/admin/resource-uploads', requireDatabase, requireAdmin, async (request, response, next) => {
+  try {
+    const { name, totalBytes } = request.body || {};
+    if (!Number.isInteger(totalBytes) || totalBytes < 1 || totalBytes > MAX_FILE_BYTES) return response.status(400).json({ error: 'Choose a nonempty file no larger than 20 MB.' });
+    if (typeof name !== 'string' || !/\.(pdf|docx|pptx|xlsx|txt|png|jpe?g)$/i.test(name)) return response.status(400).json({ error: 'Choose a supported document or image file.' });
+    await query("DELETE FROM rws_resource_uploads WHERE created_at <= CURRENT_TIMESTAMP - INTERVAL '1 day'");
+    const id = randomToken(24);
+    await query('INSERT INTO rws_resource_uploads (id,file_name,total_bytes) VALUES ($1,$2,$3)', [id, name.slice(0, 180), totalBytes]);
+    response.json({ id });
+  } catch (error) { next(error); }
+});
+
+app.put('/api/admin/resource-uploads/:id', requireDatabase, requireAdmin, async (request, response, next) => {
+  try {
+    const { offset, data } = request.body || {};
+    if (!Number.isInteger(offset) || offset < 0 || typeof data !== 'string' || !data.length || data.length > Math.ceil(2 * 1024 * 1024 / 3) * 4 || /[^A-Za-z0-9+/=]/.test(data)) return response.status(400).json({ error: 'Invalid upload chunk. Please select the file and try again.' });
+    const bytes = Buffer.from(data, 'base64');
+    if (!bytes.length || bytes.length > 2 * 1024 * 1024 || bytes.toString('base64') !== data) return response.status(400).json({ error: 'Invalid upload chunk.' });
+    const result = await query(`UPDATE rws_resource_uploads SET file_data=file_data || $2::bytea
+      WHERE id=$1 AND octet_length(file_data)=$3 AND octet_length(file_data)+$4 <= total_bytes
+      AND created_at > CURRENT_TIMESTAMP - INTERVAL '1 day' RETURNING octet_length(file_data) AS received`, [request.params.id, bytes, offset, bytes.length]);
+    if (!result.rows.length) return response.status(409).json({ error: 'Upload expired or arrived out of order. Please save the resource again.' });
+    response.json(result.rows[0]);
+  } catch (error) { next(error); }
+});
+
+app.delete('/api/admin/resource-uploads/:id', requireDatabase, requireAdmin, async (request, response, next) => {
+  try { await query('DELETE FROM rws_resource_uploads WHERE id=$1', [request.params.id]); response.json({ ok: true }); }
+  catch (error) { next(error); }
+});
+
 app.post("/api/admin/library/items", requireDatabase, requireAdmin, async (request, response, next) => {
   try {
     const item = await saveLibraryItem(request.body || {});
@@ -676,6 +719,40 @@ app.delete("/api/admin/library/items/:id", requireDatabase, requireAdmin, async 
   } catch (error) {
     next(error);
   }
+});
+
+app.get('/api/resources/:id/file', requireDatabase, async (request, response, next) => {
+  try {
+    if (isAdminCookieValid(request.cookies?.[ADMIN_COOKIE])) return next();
+    await requireSession(request, response, async error => {
+      if (error) return next(error);
+      await requireCurrentRegistration(request, response, next);
+    });
+  } catch (error) { next(error); }
+}, async (request, response, next) => {
+  try {
+    if (!/^[1-9]\d*$/.test(request.params.id)) return response.status(404).json({ error: 'Resource not found.' });
+    const admin = isAdminCookieValid(request.cookies?.[ADMIN_COOKIE]);
+    const { rows } = await query(`SELECT i.file_name,i.file_type,octet_length(i.file_data) AS size,i.updated_at::text AS version FROM rws_library_items i
+      JOIN rws_library_sections s ON s.id=i.section_id
+      WHERE i.id=$1 AND i.file_data IS NOT NULL AND ($2 OR (i.is_visible AND s.is_visible))`, [request.params.id, admin]);
+    const file = rows[0];
+    if (!file) return response.status(404).json({ error: 'Resource not found.' });
+    response.setHeader('Cache-Control', 'private, no-store');
+    if (request.query.info === '1') return response.json({ name: file.file_name, type: file.file_type, size: file.size, version: file.version });
+    const chunked = request.query.part !== undefined;
+    if (!chunked && file.size > 3 * 1024 * 1024) return response.sendFile(path.join(rootDir, 'resource-download.html'));
+    const part = chunked ? Number(request.query.part) : 0;
+    if (!Number.isInteger(part) || part < 0 || part * 2 * 1024 * 1024 >= file.size) return response.status(400).json({ error: 'Invalid download part.' });
+    if (chunked && request.query.version !== file.version) return response.status(409).json({ error: 'This file changed. Please restart the download.' });
+    const start = chunked ? part * 2 * 1024 * 1024 + 1 : 1;
+    const length = chunked ? 2 * 1024 * 1024 : file.size;
+    const result = await query('SELECT substring(file_data from $2::int for $3::int) AS file_data FROM rws_library_items WHERE id=$1 AND updated_at::text=$4', [request.params.id, start, length, file.version]);
+    if (!result.rows.length) return response.status(409).json({ error: 'This file changed. Please restart the download.' });
+    response.setHeader('Content-Type', file.file_type);
+    response.setHeader('Content-Disposition', `attachment; filename="resource.${file.file_name.split('.').pop().replace(/[^a-zA-Z0-9]/g, '')}"; filename*=UTF-8''${encodeURIComponent(file.file_name).replace(/'/g, '%27')}`);
+    response.send(result.rows[0].file_data);
+  } catch (error) { next(error); }
 });
 
 app.get(

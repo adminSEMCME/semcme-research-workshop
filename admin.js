@@ -43,6 +43,8 @@ const elements = {
   itemSelect: $("#itemSelect"),
   itemTitle: $("#itemTitle"),
   itemUrl: $("#itemUrl"),
+  itemSource: $("#itemSource"),
+  itemFile: $("#itemFile"),
   itemSpeaker: $("#itemSpeaker"),
   itemDate: $("#itemDate"),
   itemType: $("#itemType"),
@@ -191,7 +193,11 @@ function fillSectionForm() {
 function fillItemForm() {
   const item = activeItem();
   elements.itemTitle.value = item?.title || "";
-  elements.itemUrl.value = item?.url || "";
+  elements.itemUrl.value = item?.fileName ? '' : item?.url || '';
+  elements.itemSource.value = item?.fileName ? 'file' : 'link';
+  elements.itemFile.value = '';
+  $('#itemFileCurrent').textContent = item?.fileName ? `Saved file: ${item.fileName}. Leave the file chooser empty to keep it, or select a replacement.` : 'No file saved yet.';
+  updateResourceSource();
   elements.itemSpeaker.value = item?.speaker || "";
   elements.itemDate.value = item?.date || "";
   elements.itemType.value = item?.itemType || "resource";
@@ -199,6 +205,68 @@ function fillItemForm() {
   elements.itemVisible.checked = item?.isVisible ?? true;
   elements.deleteItemButton.disabled = !item;
 }
+
+function updateResourceSource() {
+  const fileMode = elements.itemSource.value === 'file';
+  $('#itemUrlField').hidden = fileMode;
+  $('#itemFileField').hidden = !fileMode;
+  elements.itemUrl.required = !fileMode;
+  elements.itemUrl.disabled = fileMode;
+  elements.itemFile.required = fileMode && !activeItem()?.fileName;
+  elements.itemFile.disabled = !fileMode;
+}
+elements.itemSource.addEventListener('change', updateResourceSource);
+
+async function selectedResourceFile() {
+  if (elements.itemSource.value !== 'file') return null;
+  const file = elements.itemFile.files[0];
+  if (!file) return null;
+  if (!file.size || file.size > 20 * 1024 * 1024) throw new Error('Choose a nonempty file no larger than 20 MB. Use a link for larger files.');
+  const upload = await requestJson('/api/admin/resource-uploads', { method: 'POST', body: JSON.stringify({ name: file.name, totalBytes: file.size }) });
+  try {
+    for (let offset = 0; offset < file.size; offset += 2 * 1024 * 1024) {
+      const chunk = file.slice(offset, offset + 2 * 1024 * 1024);
+      const data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('The file could not be read. Please select it again.'));
+        reader.onload = () => resolve(String(reader.result).split(',')[1]);
+        reader.readAsDataURL(chunk);
+      });
+      const result = await requestJson(`/api/admin/resource-uploads/${upload.id}`, { method: 'PUT', body: JSON.stringify({ offset, data }) });
+      elements.itemForm.querySelector('button[type="submit"]').textContent = `Uploading ${Math.round(result.received / file.size * 100)}%...`;
+    }
+    return upload.id;
+  } catch (error) {
+    await requestJson(`/api/admin/resource-uploads/${upload.id}`, { method: 'DELETE' }).catch(() => {});
+    throw error;
+  }
+}
+
+function fillCampaignForm(settings) {
+  $('#campaignEventId').value = settings.eventId || '';
+  $('#campaignTrackKey').value = settings.trackKey || '';
+  $('#campaignRegistrationUrl').value = settings.registrationUrl || '';
+}
+
+$('#campaignForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!confirm('Save this registration campaign? Existing users will be checked against its registrant list on their next sign-in or protected request. Users registered only for the previous event will no longer have access.')) return;
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  const status = $('#campaignStatus');
+  const payload = { eventId: $('#campaignEventId').value, trackKey: $('#campaignTrackKey').value, registrationUrl: $('#campaignRegistrationUrl').value };
+  setBusy(button, true, 'Checking campaign...');
+  status.className = 'message';
+  status.textContent = 'Checking the Constant Contact registrant list...';
+  try {
+    const settings = await requestJson('/api/admin/registration-settings', { method: 'PUT', body: JSON.stringify(payload) });
+    fillCampaignForm(settings);
+    status.className = 'message success';
+    status.textContent = 'Campaign saved. Sync users below, then test sign-in with a registrant from the new event.';
+  } catch (error) {
+    status.className = 'message error';
+    status.textContent = error.message;
+  } finally { setBusy(button, false, 'Save campaign'); }
+});
 
 function formatDate(value) {
   if (!value) return "-";
@@ -335,11 +403,13 @@ async function loadLibrary() {
 }
 
 async function loadDashboardData() {
-  const [libraryData, usersData] = await Promise.all([
+  const [libraryData, usersData, settings] = await Promise.all([
     requestJson("/api/admin/library"),
     requestJson("/api/admin/users"),
+    requestJson("/api/admin/registration-settings"),
   ]);
 
+  fillCampaignForm(settings);
   state.sections = libraryData.sections || [];
   state.users = usersData.users || [];
   if (state.selectedSectionId && !activeSection()) state.selectedSectionId = "";
@@ -544,6 +614,7 @@ elements.itemForm.addEventListener("submit", async (event) => {
   }
   if (!confirm("Save this resource?")) return;
   const payload = {
+    sourceMode: elements.itemSource.value,
     sectionId: section.id,
     title: elements.itemTitle.value,
     url: elements.itemUrl.value,
@@ -556,13 +627,19 @@ elements.itemForm.addEventListener("submit", async (event) => {
   const item = activeItem();
   const url = item ? `/api/admin/library/items/${item.id}` : "/api/admin/library/items";
   const method = item ? "PUT" : "POST";
+  const button = elements.itemForm.querySelector('button[type="submit"]');
+  setBusy(button, true, 'Saving resource...');
   try {
+    payload.uploadId = await selectedResourceFile();
     const result = await requestJson(url, { method, body: JSON.stringify(payload) });
     state.selectedItemId = String(result.item.id);
     await loadLibrary();
     message("Resource saved.", "success");
   } catch (error) {
     message(error.message, "error");
+  } finally {
+    if (payload.uploadId) await requestJson(`/api/admin/resource-uploads/${payload.uploadId}`, { method: 'DELETE' }).catch(() => {});
+    setBusy(button, false, "Save resource");
   }
 });
 

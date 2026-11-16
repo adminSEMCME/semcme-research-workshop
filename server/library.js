@@ -1,3 +1,4 @@
+import { resourceUrl } from "./resource-files.js";
 import { originalLibrarySections } from "../data/original-library.js";
 import { config } from "./config.js";
 import { getLibraryContent } from "./repositories.js";
@@ -283,7 +284,7 @@ function normalizeManagedSections(sections) {
         title: item.title,
         speaker: item.speaker || "",
         date: item.resource_date || "",
-        url: item.url,
+        url: resourceUrl(item),
         type: item.item_type || "resource"
       }))
     })),

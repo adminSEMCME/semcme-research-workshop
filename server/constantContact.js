@@ -1,3 +1,4 @@
+import { getWorkshopSettings } from "./workshop-settings.js";
 import { config } from "./config.js";
 import { getIntegrationTokens, saveIntegrationTokens } from "./repositories.js";
 import { normalizeEmail } from "./security.js";
@@ -684,13 +685,12 @@ async function fetchEventDefaultTrackKeys(eventId) {
   };
 }
 
-async function resolveTrackKeys(eventId) {
-  if (resolvedTrackKeyLists.has(eventId)) return resolvedTrackKeyLists.get(eventId);
-
-  const configuredTrackKey = config.constantContact.trackKey;
+async function resolveTrackKeys(eventId, configuredTrackKey = '') {
+  const cacheKey = JSON.stringify([eventId, configuredTrackKey]);
+  if (resolvedTrackKeyLists.has(cacheKey)) return resolvedTrackKeyLists.get(cacheKey);
   if (configuredTrackKey) {
     const resolved = { eventId, trackKeys: [configuredTrackKey] };
-    resolvedTrackKeyLists.set(eventId, resolved);
+    resolvedTrackKeyLists.set(cacheKey, resolved);
     return resolved;
   }
 
@@ -718,19 +718,20 @@ async function resolveTrackKeys(eventId) {
   }
 
   const resolved = { eventId: resolvedEventId, trackKeys };
-  resolvedTrackKeyLists.set(eventId, resolved);
+  resolvedTrackKeyLists.set(cacheKey, resolved);
   return resolved;
 }
 
 export async function findVirtualLibraryRegistrationByEmail(email) {
   const normalizedEmail = normalizeEmail(email);
-  const eventId = config.constantContact.eventId;
+  const settings = await getWorkshopSettings();
+  const eventId = settings.eventId;
 
   if (!eventId) {
     throw new ConstantContactError("Constant Contact Research Workshop Series event is not configured.", { status: 503 });
   }
 
-  const resolved = await resolveTrackKeys(eventId);
+  const resolved = await resolveTrackKeys(eventId, settings.trackKey);
   const trackKeys = resolved.trackKeys;
   for (const trackKey of trackKeys) {
     const program = { eventId: resolved.eventId, trackKey };
@@ -753,7 +754,7 @@ export async function findVirtualLibraryRegistrationByEmail(email) {
       const data = await response.json();
       const records = data.records || data.registrations || [];
       const match = records.find((record) => registrationMatchesEmail(record, normalizedEmail, program));
-      if (match) return mapRegistration(match, program);
+      if (match) return { ...mapRegistration(match, program), registrationRevision: settings.updatedAt || '' };
 
       cursor = data.next_cursor || null;
       if (!cursor && data._links?.next?.href) {
@@ -806,13 +807,14 @@ async function fetchRegistrationsForTrack(eventId, trackKey, onRegistration) {
 }
 
 export async function listVirtualLibraryRegistrations() {
-  const eventId = config.constantContact.eventId;
+  const settings = await getWorkshopSettings();
+  const eventId = settings.eventId;
 
   if (!eventId) {
     throw new ConstantContactError("Constant Contact Research Workshop Series event is not configured.", { status: 503 });
   }
 
-  const resolved = await resolveTrackKeys(eventId);
+  const resolved = await resolveTrackKeys(eventId, settings.trackKey);
   const trackKeys = resolved.trackKeys;
   const registrationsByEmail = new Map();
   let recordsFound = 0;
@@ -821,7 +823,7 @@ export async function listVirtualLibraryRegistrations() {
     try {
       recordsFound += await fetchRegistrationsForTrack(resolved.eventId, trackKey, (record, program) => {
         const registration = mapRegistration(record, program);
-        if (registration?.email) registrationsByEmail.set(registration.email, registration);
+        if (registration?.email) registrationsByEmail.set(registration.email, { ...registration, registrationRevision: settings.updatedAt || '' });
       });
     } catch (error) {
       if (trackKeys.length > 1 && [400, 404].includes(error.status)) continue;
@@ -833,4 +835,15 @@ export async function listVirtualLibraryRegistrations() {
   registrations.recordsFound = recordsFound;
   registrations.tracksChecked = trackKeys.length;
   return registrations;
+}
+
+export async function validateRegistrationCampaign(settings) {
+  // Verify the proposed event/track before replacing the active registration source.
+  resolvedTrackKeyLists.delete(JSON.stringify([settings.eventId, settings.trackKey]));
+  const resolved = await resolveTrackKeys(settings.eventId, settings.trackKey);
+  for (const track of resolved.trackKeys) {
+    const response = await constantContactFetch(`/events/${encodeURIComponent(resolved.eventId)}/tracks/${encodeURIComponent(track)}/registrations?registration_status=REGISTERED&limit=1`);
+    if (!response.ok) throw new ConstantContactError('Could not read registrations for that event and track. Check the IDs and Constant Contact connection. The active campaign has not changed.', { status: 400 });
+  }
+  return { ...settings, eventId: resolved.eventId };
 }

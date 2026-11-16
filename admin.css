@@ -753,3 +753,10 @@ button.is-loading::after {
     padding: 0;
   }
 }
+
+#itemFileField[hidden], #itemUrlField[hidden] { display: none; }
+#itemFileField p, .campaign-help { font-size: 15px; line-height: 1.6; color: #425668; }
+#itemFileCurrent { overflow-wrap: anywhere; }
+.campaign-help { padding: 14px 18px; background: #f2f6fa; border: 1px solid #cbd9e3; border-radius: 8px; }
+.campaign-help summary { cursor: pointer; font-weight: 600; }
+.campaign-help li + li { margin-top: 8px; }

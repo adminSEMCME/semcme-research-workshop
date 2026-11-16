@@ -1,3 +1,4 @@
+import { decodeResourceFile, validateResourceBytes } from "./resource-files.js";
 import { query, withTransaction } from "./db.js";
 import { hashToken, randomToken } from "./security.js";
 
@@ -35,9 +36,10 @@ export async function upsertUserFromRegistration(registration) {
         registration_status,
         registered_at,
         synced_at,
-        raw_data
+        raw_data,
+        registration_revision
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15::timestamp, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP, $16::jsonb)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15::timestamp, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP, $16::jsonb, $17)
       ON CONFLICT (email)
       DO UPDATE SET
         full_name = COALESCE(EXCLUDED.full_name, rws_users.full_name),
@@ -57,6 +59,7 @@ export async function upsertUserFromRegistration(registration) {
         constant_contact_event_id = EXCLUDED.constant_contact_event_id,
         constant_contact_track_key = EXCLUDED.constant_contact_track_key,
         registration_status = EXCLUDED.registration_status,
+        registration_revision = EXCLUDED.registration_revision,
         registered_at = COALESCE(EXCLUDED.registered_at, rws_users.registered_at),
         raw_data = CASE
           WHEN EXCLUDED.raw_data = '{}'::jsonb THEN rws_users.raw_data
@@ -81,7 +84,8 @@ export async function upsertUserFromRegistration(registration) {
       registration.trackKey || null,
       registration.registrationStatus || "REGISTERED",
       registration.registrationTime || null,
-      JSON.stringify(registration.rawData || {})
+      JSON.stringify(registration.rawData || {}),
+      registration.registrationRevision || ""
     ]
   );
   return result.rows[0];
@@ -245,7 +249,7 @@ export async function getLibraryContent({ includeHidden = false } = {}) {
 
   const itemResult = await query(
     `
-      SELECT i.*
+      SELECT i.id, i.section_id, i.title, i.speaker, i.resource_date, i.url, i.item_type, i.display_order, i.is_visible, i.file_name, i.file_type
       FROM rws_library_items i
       JOIN rws_library_sections s ON s.id = i.section_id
       WHERE i.section_id = ANY($1::bigint[])
@@ -318,65 +322,42 @@ export async function deleteLibrarySection(id) {
 export async function saveLibraryItem(item) {
   const title = String(item.title || "").trim();
   const url = String(item.url || "").trim();
+  const fileMode = item.sourceMode === 'file';
+  let file = fileMode && item.file ? decodeResourceFile(item.file) : null;
   if (!item.sectionId && !item.section_id) throw Object.assign(new Error("Section is required."), { status: 400 });
   if (!title) throw Object.assign(new Error("Title is required."), { status: 400 });
-  if (!url) throw Object.assign(new Error("URL is required."), { status: 400 });
-  if (!item.id) {
-    const result = await query(
-      `
-        INSERT INTO rws_library_items (
-          section_id,
-          title,
-          speaker,
-          resource_date,
-          url,
-          item_type,
-          display_order,
-          is_visible
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING *
-      `,
-      [
-        item.sectionId || item.section_id,
-        title,
-        String(item.speaker || "").trim() || null,
-        String(item.date || item.resource_date || "").trim() || null,
-        url,
-        String(item.itemType || item.item_type || "resource").trim() || "resource",
-        Number(item.displayOrder || item.display_order || 0),
-        item.isVisible ?? item.is_visible ?? true
-      ]
-    );
-    return result.rows[0];
+  if (!fileMode) {
+    let parsed;
+    try { parsed = new URL(url); } catch {}
+    if (!parsed || !['https:', 'http:'].includes(parsed.protocol)) throw Object.assign(new Error("Enter a full HTTP or HTTPS resource URL, or choose Upload file."), { status: 400 });
   }
-  const result = await query(
-    `
-      UPDATE rws_library_items
-      SET section_id = $2,
-          title = $3,
-          speaker = $4,
-          resource_date = $5,
-          url = $6,
-          item_type = $7,
-          display_order = $8,
-          is_visible = $9
-      WHERE id = $1
-      RETURNING *
-    `,
-    [
-      item.id || null,
-      item.sectionId || item.section_id,
-      title,
-      String(item.speaker || "").trim() || null,
-      String(item.date || item.resource_date || "").trim() || null,
-      url,
-      String(item.itemType || item.item_type || "resource").trim() || "resource",
-      Number(item.displayOrder || item.display_order || 0),
-      item.isVisible ?? item.is_visible ?? true
-    ]
-  );
-  return result.rows[0];
+  return withTransaction(async client => {
+    if (fileMode && item.uploadId) {
+      const upload = (await client.query("SELECT * FROM rws_resource_uploads WHERE id=$1 AND created_at > CURRENT_TIMESTAMP - INTERVAL '1 day' FOR UPDATE", [String(item.uploadId)])).rows[0];
+      if (!upload || upload.file_data.length !== upload.total_bytes) throw Object.assign(new Error('The upload is incomplete or expired. Select the file and save again.'), { status: 400 });
+      file = validateResourceBytes(upload.file_name, upload.file_data);
+      await client.query('DELETE FROM rws_resource_uploads WHERE id=$1', [String(item.uploadId)]);
+    }
+    const existing = item.id ? (await client.query('SELECT id, file_name FROM rws_library_items WHERE id=$1 FOR UPDATE', [item.id])).rows[0] : null;
+    if (item.id && !existing) throw Object.assign(new Error('This resource no longer exists. Refresh the page.'), { status: 404 });
+    if (fileMode && !file && !existing?.file_name) throw Object.assign(new Error('Choose a file to upload.'), { status: 400 });
+    const values = [item.sectionId || item.section_id, title, String(item.speaker || '').trim() || null,
+      String(item.date || item.resource_date || '').trim() || null, fileMode ? '' : url,
+      String(item.itemType || item.item_type || 'resource'), Number(item.displayOrder || item.display_order || 0),
+      item.isVisible ?? item.is_visible ?? true, file?.data || null, file?.name || null, file?.type || null];
+    if (!item.id) {
+      return (await client.query(`INSERT INTO rws_library_items
+        (section_id,title,speaker,resource_date,url,item_type,display_order,is_visible,file_data,file_name,file_type)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, values)).rows[0];
+    }
+    // Keep the saved attachment when editing metadata; switching to a link removes it.
+    return (await client.query(`UPDATE rws_library_items SET section_id=$1,title=$2,speaker=$3,
+      resource_date=$4,url=$5,item_type=$6,display_order=$7,is_visible=$8,
+      file_data=CASE WHEN $13 THEN COALESCE($9,file_data) ELSE NULL END,
+      file_name=CASE WHEN $13 THEN COALESCE($10,file_name) ELSE NULL END,
+      file_type=CASE WHEN $13 THEN COALESCE($11,file_type) ELSE NULL END
+      WHERE id=$12 RETURNING id`, [...values, item.id, fileMode])).rows[0];
+  });
 }
 
 export async function deleteLibraryItem(id) {

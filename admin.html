@@ -118,10 +118,19 @@
                 Title
                 <input id="itemTitle" required />
               </label>
-              <label data-tooltip="Destination link for the recording, slides, evaluation, or resource.">
-                URL
+              <label>Resource source
+                <select id="itemSource"><option value="link">Link</option><option value="file">Upload file</option></select>
+              </label>
+              <label id="itemUrlField">Resource URL
                 <input id="itemUrl" type="url" required />
               </label>
+              <div id="itemFileField" hidden>
+                <label>Resource file
+                  <input id="itemFile" type="file" accept=".pdf,.docx,.pptx,.xlsx,.txt,.png,.jpg,.jpeg" aria-describedby="itemFileHelp itemFileCurrent" />
+                </label>
+                <p id="itemFileHelp">PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx), text, PNG, or JPG. Maximum 20 MB. For larger files or videos, choose Link. The file uploads when you click Save resource.</p>
+                <p id="itemFileCurrent"></p>
+              </div>
               <label data-tooltip="Optional presenter or speaker name.">
                 Presenter
                 <input id="itemSpeaker" />
@@ -155,6 +164,24 @@
               <button class="secondary-button" id="newItemButton" type="button" data-tooltip="Clear the form to create a new material.">New resource</button>
               <button class="danger-button" id="deleteItemButton" type="button" data-tooltip="Delete this material after confirmation.">Delete resource</button>
             </div>
+          </form>
+        </section>
+
+        <section class="panel">
+          <h2>Constant Contact registration campaign</h2>
+          <p>Choose which workshop event grants access. Keep the current campaign until you are ready to switch to the next academic year.</p>
+          <details class="campaign-help"><summary>How to switch to the next year's campaign</summary>
+            <ol><li>Create the new workshop event in Constant Contact.</li><li>Copy its event ID below. Use the event ID, not an email campaign ID, event name, or registration page URL.</li><li>Leave Registration track key blank to check all discovered tracks, or enter a specific track key to restrict access to that track.</li><li>Paste the public registration page URL for the new event.</li><li>Click Save campaign and confirm. The website checks access to the registrant list before saving.</li><li>Click Sync users below, then test sign-in with an email registered for the new event.</li></ol>
+            <p>After a save, existing users are checked against this campaign on their next protected request or sign-in. People registered only for the previous event will need to register for the new one. Old user records remain in the admin table.</p>
+          </details>
+          <form id="campaignForm" class="editor-form">
+            <div class="field-grid">
+              <label>Constant Contact event ID<input id="campaignEventId" required maxlength="200" /></label>
+              <label>Registration track key (optional)<input id="campaignTrackKey" maxlength="200" /></label>
+            </div>
+            <label>Public registration page URL<input id="campaignRegistrationUrl" type="url" required /></label>
+            <p id="campaignStatus" class="message" role="status" aria-live="polite"></p>
+            <div class="button-row"><button type="submit" class="primary-button">Save campaign</button></div>
           </form>
         </section>
 

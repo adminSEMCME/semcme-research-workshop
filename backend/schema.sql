@@ -114,3 +114,25 @@ CREATE TRIGGER rws_library_items_updated_at
 BEFORE UPDATE ON rws_library_items
 FOR EACH ROW
 EXECUTE FUNCTION rws_touch_updated_at();
+
+-- Small resource attachments live with the resource and are deleted with it.
+ALTER TABLE rws_library_items ADD COLUMN IF NOT EXISTS file_data BYTEA;
+ALTER TABLE rws_library_items ADD COLUMN IF NOT EXISTS file_name TEXT;
+ALTER TABLE rws_library_items ADD COLUMN IF NOT EXISTS file_type TEXT;
+
+CREATE TABLE IF NOT EXISTS rws_settings (
+  key TEXT PRIMARY KEY,
+  value JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE rws_users ADD COLUMN IF NOT EXISTS registration_revision TEXT NOT NULL DEFAULT '';
+
+-- Temporary chunks are consumed with the resource save or expire after one day.
+CREATE TABLE IF NOT EXISTS rws_resource_uploads (
+  id TEXT PRIMARY KEY,
+  file_name TEXT NOT NULL,
+  total_bytes INTEGER NOT NULL CHECK (total_bytes BETWEEN 1 AND 20971520),
+  file_data BYTEA NOT NULL DEFAULT ''::bytea,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
